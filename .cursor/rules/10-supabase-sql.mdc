@@ -1,0 +1,24 @@
+---
+description: Supabase schema, migrations and SQL conventions
+globs: supabase/migrations/**/*.sql,**/*.sql
+alwaysApply: false
+---
+
+# Supabase / SQL
+
+Опорный спек схемы — `docs/grc-reliability-layer.md`. Не выдумывать таблицы, использовать существующие: `leads`, `jobs`, `job_runs`, `health_checks`, `reconciliation_log`.
+
+## Конвенции
+- `snake_case` для таблиц и колонок. PK — `uuid default gen_random_uuid()` (кроме append-only логов на `bigserial`).
+- Временные метки — `timestamptz default now()`.
+- Идемпотентность на уровне БД: уникальные ограничения (`leads.idempotency_key`, `jobs (type, idempotency_key)`).
+- Захват job — только через `for update skip locked`. Никаких блокировок на всю таблицу.
+- Backoff: `next_run_at = now() + interval '30 seconds' * pow(2, attempts)`.
+
+## Дашборд
+- Каждый из 9 виджетов оборачивается в Postgres-функцию (`dash_*`) — фронт дёргает `supabase.rpc()`, а не сырой SQL. Запросы — в `docs/grc-dashboard-screen-1.md`.
+
+## Запрещено
+- Необратимые операции (DROP, DELETE без WHERE, TRUNCATE) — не генерировать без явного запроса в спеке.
+- Менять существующую миграцию задним числом — только новая миграция поверх.
+- RLS отключать молча; если таблица публично доступна — обосновать в комментарии.

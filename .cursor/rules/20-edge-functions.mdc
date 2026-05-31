@@ -1,0 +1,32 @@
+---
+description: Edge Functions, intake API and queue worker conventions
+globs: supabase/functions/**,app/api/**,lib/**
+alwaysApply: false
+---
+
+# Edge Functions / worker / API
+
+Опорный спек — `docs/grc-reliability-layer.md` (жизненный цикл job, backoff, saga).
+
+## Контракт job
+- Статусы: `pending → processing → done | failed → dead`. Никаких других.
+- Воркер берёт работу через `for update skip locked`, инкрементит `attempts`, ставит `locked_at`.
+- Успех → `done`. Ошибка → `failed` с `next_run_at` по backoff; при `attempts >= max_attempts` → `dead`.
+- Каждое исполнение пишет строку в `job_runs` (status, service, latency_ms, error). Без исключений.
+
+## Идемпотентность
+- Любой обработчик безопасен к повторному вызову. Pipedrive — upsert по `external_key`, не create.
+- Ключ лида: `md5(lower(email) || coalesce(phone,'') || source)`. Утилита — `lib/idempotency.ts`.
+
+## Устойчивость
+- Каждый внешний вызов в try/catch; ошибка → запись в `job_runs` и backoff, не throw наружу без обработки.
+- Перед обработкой job проверять circuit breaker: если последние 3 health-check сервиса `ok=false` — не брать его job.
+- Алерты — через `lib/alert.ts` (тот же порог, что красит дашборд).
+
+## Intake (критичный путь)
+- `api/intake` делает минимум: посчитать ключ → `insert ... on conflict do nothing` → enqueue `enrich` → вернуть 200. Никакой тяжёлой логики на приёме.
+
+## Запрещено
+- Секреты в коде — только `Deno.env` / `process.env`.
+- Хранить состояние в памяти функции между вызовами — оно в Postgres.
+- Глотать ошибки без записи в `job_runs`.

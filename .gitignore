@@ -1,0 +1,40 @@
+# Зависимости
+node_modules/
+.pnp/
+.pnp.js
+
+# Сборка / Next.js
+.next/
+out/
+build/
+dist/
+
+# Секреты и окружение (инвариант: секреты только в env vars, не в репозитории)
+.env
+.env.*
+!.env.example
+
+# Vercel
+.vercel/
+
+# Supabase (локальное состояние)
+supabase/.branches/
+supabase/.temp/
+**/.supabase/
+
+# Логи
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Системное
+.DS_Store
+Thumbs.db
+
+# Редакторы
+*.swp
+.idea/
+.vscode/*
+!.vscode/extensions.json
