@@ -410,7 +410,7 @@ export default function GRCDashboard() {
 
     // Прогрессивный рендер: каждая RPC наполняет свой срез по мере готовности.
     const load = async () => {
-      const calls: Promise<unknown>[] = [
+      const calls: PromiseLike<unknown>[] = [
         supabase.rpc("dash_health").then(({ data: d }) => set({ health: mapHealth((d ?? []) as Row[]) })),
         supabase.rpc("dash_recon").then(({ data: d }) => set({ recon: mapRecon((d ?? []) as Row[]) })),
         supabase.rpc("dash_dead").then(({ data: d }) => set({ dead: mapDead((d ?? []) as Row[]) })),
