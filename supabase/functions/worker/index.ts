@@ -5,6 +5,7 @@ import {
   findPersonByEmail,
   updateDeal,
 } from "../../../lib/pipedrive.ts";
+import { sendAlert } from "../../../lib/alert.ts";
 
 // Один захваченный job (подмножество таблицы jobs, нужное воркеру).
 interface Job {
@@ -199,7 +200,23 @@ async function processJob(supabase: SupabaseClient, job: Job): Promise<boolean> 
       finished_at: new Date().toISOString(),
     });
 
-    await supabase.rpc("fail_job", { p_id: job.id, p_error: message });
+    const { error: failErr } = await supabase.rpc("fail_job", { p_id: job.id, p_error: message });
+
+    // Алерт только при фактическом переходе в dead (исчерпаны ретраи). Dead-job
+    // больше не захватывается claim_job, поэтому событие отрабатывает один раз.
+    if (!failErr) {
+      const { data: after } = await supabase
+        .from("jobs")
+        .select("status")
+        .eq("id", job.id)
+        .single();
+      if ((after as { status?: string } | null)?.status === "dead") {
+        await sendAlert(
+          "crit",
+          `job dead · type=${job.type} lead=${job.lead_id ?? "—"} attempts=${job.attempts + 1}/${job.max_attempts}\n${message}`,
+        );
+      }
+    }
     return false;
   }
 }

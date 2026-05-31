@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
+import { sendAlert } from "../../../lib/alert.ts";
 
 // Health-check (каркас) — пингует доступные внешние сервисы и пишет по строке
 // в health_checks. Только бесплатное. Сервис пингуется ТОЛЬКО если его креды
@@ -149,6 +150,22 @@ Deno.serve(async (req: Request): Promise<Response> => {
   try {
     const results = await runChecks(supabase);
     const checkedAt = new Date().toISOString();
+
+    // Алерт на переход ok -> down: сравниваем с последней записью ДО вставки
+    // новых строк. Был ok (или нет истории и сейчас down — не шлём), стал down — шлём один раз.
+    for (const r of results) {
+      if (r.ok) continue;
+      const { data: prev } = await supabase
+        .from("health_checks")
+        .select("ok")
+        .eq("service", r.service)
+        .order("checked_at", { ascending: false })
+        .limit(1);
+      const wasOk = Array.isArray(prev) && prev.length > 0 && prev[0].ok === true;
+      if (wasOk) {
+        await sendAlert("crit", `service down · ${r.service}\n${r.detail}`);
+      }
+    }
 
     const { error } = await supabase.from("health_checks").insert(
       results.map((r) => ({

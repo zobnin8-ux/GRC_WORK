@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
+import { sendAlert } from "../../../lib/alert.ts";
 
 // Reconcile — регулярная сверка целостности. Чистые операции по нашим таблицам,
 // никаких внешних/платных вызовов. Запускается по расписанию (pg_cron, см.
@@ -62,7 +63,11 @@ async function reconcileStuckJobs(supabase: SupabaseClient): Promise<number> {
   let reset = 0;
   for (const job of stuck ?? []) {
     const jobId = job.id as string;
-    await logIfNew(supabase, "stuck_job", jobId, { reason: `processing > ${STUCK_AFTER_MIN}m` });
+    const created = await logIfNew(supabase, "stuck_job", jobId, { reason: `processing > ${STUCK_AFTER_MIN}m` });
+    // Алерт только на свежесозданную запись журнала — не на каждый тик.
+    if (created) {
+      await sendAlert("warn", `stuck job reset · job=${jobId} (processing > ${STUCK_AFTER_MIN}m)`);
+    }
     const { error: updErr } = await supabase
       .from("jobs")
       .update({ status: "pending", locked_at: null, updated_at: new Date().toISOString() })
@@ -116,6 +121,18 @@ async function reconcileLeadNoTouch(supabase: SupabaseClient): Promise<number> {
     if (created) {
       logged += 1;
     }
+  }
+
+  // Алерт только если в этот тик появились новые записи (событие, не каждый тик).
+  // Уровень — по порогу открытых lead_no_touch (reliability §6: > 10 → crit).
+  if (logged > 0) {
+    const { count } = await supabase
+      .from("reconciliation_log")
+      .select("id", { count: "exact", head: true })
+      .eq("kind", "lead_no_touch")
+      .eq("resolved", false);
+    const open = count ?? logged;
+    await sendAlert(open > 10 ? "crit" : "warn", `lead_no_touch · ${logged} new, open total=${open}`);
   }
   return logged;
 }
