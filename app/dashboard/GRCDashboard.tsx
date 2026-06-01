@@ -162,6 +162,39 @@ const lvl = {
   errPct: (p: number): Level => (p > 10 ? "crit" : p > 5 ? "warn" : "ok"),
 };
 
+/* ---- ЯРЛЫКИ (перевод технических кодов из БД для отображения) -------------
+   Один словарь на весь дашборд (как пороги lvl). На сами значения в БД и dash_*
+   не влияет — это только подписи в UI. Неизвестный код показывается как есть. */
+const LEAD_STATUS_RU: Record<string, string> = {
+  new: "Новые",
+  enriched: "Обогащённые",
+  synced: "В CRM",
+  contacted: "С касанием",
+  orphaned: "Потеряны",
+  dead: "Мёртвые",
+};
+const JOB_TYPE_RU: Record<string, string> = {
+  enrich: "Обогащение",
+  pipedrive_upsert: "Синк в CRM",
+  first_touch: "Первое касание",
+  vapi_call: "Звонок",
+  send_email: "Письмо",
+  estimate: "Оценка",
+};
+const RECON_KIND_RU: Record<string, string> = {
+  stuck_job: "Зависшие задачи",
+  lead_no_touch: "Лиды без касания",
+  orphaned_deal: "Осиротевшие сделки",
+};
+const SYSTEM_LEVEL_RU: Record<Level, string> = {
+  ok: "В норме",
+  warn: "Деградация",
+  crit: "Инцидент",
+};
+const tStatus = (s: string) => LEAD_STATUS_RU[s] ?? s;
+const tJobType = (s: string) => JOB_TYPE_RU[s] ?? s;
+const tReconKind = (s: string) => RECON_KIND_RU[s] ?? s;
+
 /* ---- PRIMITIVES ----------------------------------------------------------- */
 function Dot({ level, pulse }: { level: Level; pulse?: boolean }) {
   return (
@@ -203,7 +236,7 @@ const cellNum: React.CSSProperties = { font: `500 13px/1 ${mono}`, color: c.text
 /* ---- WIDGETS -------------------------------------------------------------- */
 function W1Health({ rows }: { rows: HealthRow[] }) {
   return (
-    <Panel title="Здоровье сервисов" level={lvl.health(rows)} note="last ping">
+    <Panel title="Здоровье сервисов" level={lvl.health(rows)} note="посл. пинг">
       <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
         {rows.map((r) => {
           const level: Level = !r.ok || r.stale ? "crit" : (r.latency_ms ?? 0) > 700 ? "warn" : "ok";
@@ -214,7 +247,7 @@ function W1Health({ rows }: { rows: HealthRow[] }) {
                 <span style={{ ...cellLabel, color: c.text }}>{r.service}</span>
               </span>
               <span style={{ ...cellNum, color: !r.ok || r.stale ? c.red : c.muted }}>
-                {!r.ok ? "DOWN" : r.stale ? "STALE" : `${r.latency_ms}ms`}
+                {!r.ok ? "ЛЕЖИТ" : r.stale ? "УСТАРЕЛО" : `${r.latency_ms}мс`}
               </span>
             </div>
           );
@@ -235,7 +268,7 @@ function W2Recon({ rows }: { rows: ReconRow[] }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {rows.map((r) => (
           <div key={r.kind} style={{ display: "flex", justifyContent: "space-between" }}>
-            <span style={cellLabel}>{r.kind}</span>
+            <span style={cellLabel}>{tReconKind(r.kind)}</span>
             <span style={cellNum}>{r.open_count}</span>
           </div>
         ))}
@@ -247,15 +280,15 @@ function W2Recon({ rows }: { rows: ReconRow[] }) {
 function W3Dead({ rows }: { rows: DeadRow[] }) {
   const sum = rows.reduce((a, r) => a + r.dead_count, 0);
   return (
-    <Panel title="Dead jobs" level={lvl.dead(rows)}>
+    <Panel title="Мёртвые задачи" level={lvl.dead(rows)}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
         <span style={{ font: `600 38px/1 ${mono}`, color: sum > 0 ? c.amber : c.green }}>{sum}</span>
-        <span style={cellLabel}>в dead-letter</span>
+        <span style={cellLabel}>в отстойнике</span>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {rows.length ? rows.map((r) => (
           <div key={r.type} style={{ display: "flex", justifyContent: "space-between" }}>
-            <span style={cellLabel}>{r.type}</span>
+            <span style={cellLabel}>{tJobType(r.type)}</span>
             <span style={cellNum}>{r.dead_count}</span>
           </div>
         )) : <span style={{ ...cellLabel, color: c.faint }}>чисто</span>}
@@ -276,7 +309,7 @@ function W4Funnel({ rows }: { rows: FunnelRow[] }) {
           const v = map[s] ?? 0;
           return (
             <div key={s} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <span style={{ ...cellLabel, width: 88, textAlign: "right", color: s === "contacted" ? c.green : c.muted }}>{s}</span>
+              <span style={{ ...cellLabel, width: 88, textAlign: "right", color: s === "contacted" ? c.green : c.muted }}>{tStatus(s)}</span>
               <div style={{ flex: 1, height: 18, background: "#0d1117", borderRadius: 4, overflow: "hidden" }}>
                 <div style={{ width: `${(v / max) * 100}%`, height: "100%", background: colorFor(s),
                   opacity: v === 0 ? 0.15 : 0.85, borderRadius: 4, transition: "width .5s ease" }} />
@@ -293,7 +326,7 @@ function W4Funnel({ rows }: { rows: FunnelRow[] }) {
 function W5Ttft({ data }: { data: Ttft }) {
   const level = lvl.ttft(data.median_minutes);
   return (
-    <Panel title="Time-to-first-touch · медиана" level={level} note="SLA < 15м">
+    <Panel title="Время до первого касания · медиана" level={level} note="SLA < 15м">
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
         <span style={{ font: `600 46px/1 ${mono}`, color: STATUS[level] }}>{data.median_minutes}</span>
         <span style={cellLabel}>мин</span>
@@ -310,7 +343,7 @@ function W6Queue({ rows }: { rows: QueueRow[] }) {
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead>
           <tr>
-            {["type", "pend", "retry", "fly"].map((h, i) => (
+            {["тип", "ждут", "повтор", "в работе"].map((h, i) => (
               <th key={h} style={{ font: `400 10px/1 ${mono}`, color: c.faint, textAlign: i ? "right" : "left",
                 textTransform: "uppercase", letterSpacing: "0.08em", paddingBottom: 8 }}>{h}</th>
             ))}
@@ -319,7 +352,7 @@ function W6Queue({ rows }: { rows: QueueRow[] }) {
         <tbody>
           {rows.map((r) => (
             <tr key={r.type}>
-              <td style={{ ...cellLabel, padding: "5px 0" }}>{r.type}</td>
+              <td style={{ ...cellLabel, padding: "5px 0" }}>{tJobType(r.type)}</td>
               <td style={{ ...cellNum, textAlign: "right", color: r.pending > 50 ? c.amber : c.text }}>{r.pending}</td>
               <td style={{ ...cellNum, textAlign: "right", color: c.muted }}>{r.retrying}</td>
               <td style={{ ...cellNum, textAlign: "right", color: c.faint }}>{r.in_flight}</td>
@@ -334,7 +367,7 @@ function W6Queue({ rows }: { rows: QueueRow[] }) {
 function W7ErrorRate({ rows }: { rows: ErrorRateRow[] }) {
   const worst = Math.max(...rows.map((r) => r.error_pct), 0);
   return (
-    <Panel title="Error rate · за час" level={lvl.errPct(worst)} span={1}>
+    <Panel title="Доля ошибок · за час" level={lvl.errPct(worst)} span={1}>
       <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
         {rows.map((r) => {
           const level = lvl.errPct(r.error_pct);
@@ -376,7 +409,7 @@ function W8Hourly({ rows }: { rows: HourRow[] }) {
 
 function W9Errors({ rows }: { rows: ErrorFeedRow[] }) {
   return (
-    <Panel title="Последние ошибки" level={null} span={4} note="клик → drill-down по job">
+    <Panel title="Последние ошибки" level={null} span={4} note="клик → детали задачи">
       <div style={{ display: "flex", flexDirection: "column" }}>
         {rows.map((r, i) => (
           <div key={i} style={{ display: "grid", gridTemplateColumns: "52px 110px 150px 70px 50px 1fr",
@@ -385,8 +418,8 @@ function W9Errors({ rows }: { rows: ErrorFeedRow[] }) {
             <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
               <Dot level="crit" /><span style={{ ...cellLabel, color: c.text }}>{r.service}</span>
             </span>
-            <span style={{ font: `400 11px/1 ${mono}`, color: c.muted }}>{r.type}</span>
-            <span style={{ font: `400 11px/1 ${mono}`, color: c.faint }}>lead {r.lead}</span>
+            <span style={{ font: `400 11px/1 ${mono}`, color: c.muted }}>{tJobType(r.type)}</span>
+            <span style={{ font: `400 11px/1 ${mono}`, color: c.faint }}>лид {r.lead}</span>
             <span style={{ font: `400 11px/1 ${mono}`, color: r.attempts >= 4 ? c.red : c.amber }}>×{r.attempts}</span>
             <span style={{ font: `400 11px/1 ${mono}`, color: c.red, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.error}</span>
           </div>
@@ -456,8 +489,8 @@ export default function GRCDashboard() {
           <div style={{ width: 30, height: 30, borderRadius: 7, background: c.accent, display: "grid", placeItems: "center",
             font: `700 14px/1 ${mono}`, color: "#1a1407" }}>G</div>
           <div>
-            <div style={{ font: `600 15px/1 ${sans}`, letterSpacing: "0.04em" }}>GRC · OPERATIONS</div>
-            <div style={{ font: `400 11px/1.4 ${mono}`, color: c.faint, marginTop: 3 }}>reliability layer · screen 1</div>
+            <div style={{ font: `600 15px/1 ${sans}`, letterSpacing: "0.04em" }}>GRC · ОПЕРАЦИИ</div>
+            <div style={{ font: `400 11px/1.4 ${mono}`, color: c.faint, marginTop: 3 }}>слой надёжности · экран 1</div>
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 22 }}>
@@ -465,7 +498,7 @@ export default function GRCDashboard() {
             background: c.panel, border: `1px solid ${systemLevel === "crit" ? c.red : systemLevel === "warn" ? "#3a3320" : c.border}` }}>
             <Dot level={systemLevel} pulse />
             <span style={{ font: `500 11px/1 ${sans}`, letterSpacing: "0.1em", textTransform: "uppercase",
-              color: STATUS[systemLevel] }}>{systemLevel === "ok" ? "operational" : systemLevel === "warn" ? "degraded" : "incident"}</span>
+              color: STATUS[systemLevel] }}>{SYSTEM_LEVEL_RU[systemLevel]}</span>
           </div>
           <div style={{ textAlign: "right" }}>
             <div style={{ font: `500 17px/1 ${mono}` }}>{fmt(clock)}</div>
@@ -490,7 +523,7 @@ export default function GRCDashboard() {
       </div>
 
       <footer style={{ marginTop: 18, font: `400 10px/1.5 ${mono}`, color: c.faint, textAlign: "center" }}>
-        данные из Supabase · dash_*-RPC (RLS-safe) · автообновление 30с. Красное на экране = алерт в Telegram.
+        данные из Supabase · автообновление 30с. Красное на экране = алерт в Telegram.
       </footer>
     </div>
   );
