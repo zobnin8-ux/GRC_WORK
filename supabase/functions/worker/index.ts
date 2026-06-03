@@ -1,11 +1,12 @@
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import {
   createDeal,
+  createOrganization,
   createPerson,
   findPersonByEmail,
   updateDeal,
 } from "../../../lib/pipedrive.ts";
-import { sendAlert } from "../../../lib/alert.ts";
+import { sendAlert, sendTelegram } from "../../../lib/alert.ts";
 
 // Один захваченный job (подмножество таблицы jobs, нужное воркеру).
 interface Job {
@@ -26,6 +27,7 @@ interface Lead {
   phone: string | null;
   pipedrive_deal_id: number | null;
   status: string;
+  raw: Record<string, unknown> | null;
 }
 
 interface HandlerResult {
@@ -45,7 +47,7 @@ function requireEnv(name: string): string {
 async function loadLead(supabase: SupabaseClient, leadId: string): Promise<Lead> {
   const { data, error } = await supabase
     .from("leads")
-    .select("id, idempotency_key, source, email, phone, pipedrive_deal_id, status")
+    .select("id, idempotency_key, source, email, phone, pipedrive_deal_id, status, raw")
     .eq("id", leadId)
     .single();
   if (error || !data) {
@@ -114,18 +116,36 @@ const handlers: Record<string, JobHandler> = {
       if (!lead.email) {
         throw new Error("pipedrive_upsert: lead has no email");
       }
+
+      const raw = (lead.raw ?? {}) as Record<string, unknown>;
+      const pick = (key: string): string => {
+        const v = raw[key];
+        return typeof v === "string" && v.trim() ? v.trim() : "";
+      };
+      const name = pick("name") || lead.email;
+      const company = pick("company");
+      const urgency = pick("urgency");
+
       let personId = await findPersonByEmail(lead.email);
+      let orgId: number | undefined;
       if (personId === null) {
+        if (company) {
+          orgId = await createOrganization(company);
+        }
         personId = await createPerson({
-          name: lead.email,
+          name,
           email: lead.email,
           phone: lead.phone,
+          orgId,
         });
       }
+      const base = company ? `${name} — ${company}` : name;
+      const title = `${urgency ? `[${urgency}] ` : ""}${base} (${lead.source})`;
       dealId = await createDeal({
-        title: `GRC lead — ${lead.email} (${lead.source})`,
+        title,
         personId,
         externalKey: lead.idempotency_key,
+        orgId,
       });
     }
 
@@ -146,6 +166,59 @@ const handlers: Record<string, JobHandler> = {
     await enqueue(supabase, "first_touch", lead.id, lead.id);
 
     return { service: "pipedrive" };
+  },
+
+  // Первое касание: уведомляем команду о новом лиде в Telegram (с ссылкой на сделку).
+  // Письмо-автоответ клиенту — позже, когда появится верифицированный домен.
+  first_touch: async (job, supabase) => {
+    if (!job.lead_id) {
+      throw new Error("first_touch: job has no lead_id");
+    }
+    const { data, error } = await supabase
+      .from("leads")
+      .select("email, phone, source, pipedrive_deal_id, raw")
+      .eq("id", job.lead_id)
+      .single();
+    if (error || !data) {
+      throw new Error(`first_touch: load lead failed: ${error?.message ?? "not found"}`);
+    }
+
+    const raw = (data.raw ?? {}) as Record<string, unknown>;
+    const pick = (key: string): string => {
+      const v = raw[key];
+      return typeof v === "string" && v.trim() ? v.trim() : "";
+    };
+    const name = pick("name") || "—";
+    const company = pick("company");
+    const location = pick("location");
+    const urgency = pick("urgency");
+    const message = pick("message");
+
+    const dealId = data.pipedrive_deal_id as number | null;
+    const domain = Deno.env.get("PIPEDRIVE_DOMAIN");
+    const dealLink = dealId
+      ? domain
+        ? `\nPipedrive: https://${domain}.pipedrive.com/deal/${dealId}`
+        : `\nPipedrive deal #${dealId}`
+      : "";
+
+    const lines = [
+      "📥 Новый лид с сайта",
+      `Имя: ${name}`,
+      data.phone ? `Телефон: ${data.phone}` : "",
+      data.email ? `Email: ${data.email}` : "",
+      company ? `Компания: ${company}` : "",
+      location ? `Локация: ${location}` : "",
+      urgency ? `Срочность: ${urgency}` : "",
+      message ? `Сообщение: ${message}` : "",
+      `Источник: ${data.source}`,
+    ].filter((l) => l !== "");
+
+    const sent = await sendTelegram(lines.join("\n") + dealLink);
+    if (!sent) {
+      console.log(`[first_touch] telegram not configured, lead=${job.lead_id} (no-op)`);
+    }
+    return { service: "telegram" };
   },
 
   // Заглушки — реальная логика в ТЗ №4.
@@ -232,6 +305,8 @@ function serviceForType(type: string): string | null {
       return "smtp";
     case "enrich":
       return "internal";
+    case "first_touch":
+      return "telegram";
     default:
       return null;
   }

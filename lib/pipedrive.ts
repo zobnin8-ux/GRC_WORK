@@ -46,8 +46,13 @@ export async function findPersonByEmail(email: string): Promise<number | null> {
   return data.items.length > 0 ? data.items[0].item.id : null;
 }
 
+export async function createOrganization(name: string): Promise<number> {
+  const data = await pdRequest<{ id: number }>("POST", "/organizations", { name });
+  return data.id;
+}
+
 export async function createPerson(
-  input: { name: string; email: string; phone?: string | null },
+  input: { name: string; email: string; phone?: string | null; orgId?: number },
 ): Promise<number> {
   const body: Record<string, unknown> = {
     name: input.name,
@@ -55,6 +60,9 @@ export async function createPerson(
   };
   if (input.phone) {
     body.phone = [input.phone];
+  }
+  if (input.orgId) {
+    body.org_id = input.orgId;
   }
   const data = await pdRequest<{ id: number }>("POST", "/persons", body);
   return data.id;
@@ -68,7 +76,7 @@ export async function findDealByExternalKey(key: string): Promise<number | null>
 }
 
 export async function createDeal(
-  input: { title: string; personId: number; externalKey: string },
+  input: { title: string; personId: number; externalKey: string; orgId?: number },
 ): Promise<number> {
   const field = requireEnv("PIPEDRIVE_EXTERNAL_KEY_FIELD");
   const body: Record<string, unknown> = {
@@ -76,6 +84,9 @@ export async function createDeal(
     person_id: input.personId,
     [field]: input.externalKey,
   };
+  if (input.orgId) {
+    body.org_id = input.orgId;
+  }
   const data = await pdRequest<{ id: number }>("POST", "/deals", body);
   return data.id;
 }
