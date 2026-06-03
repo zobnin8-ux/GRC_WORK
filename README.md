@@ -11,14 +11,20 @@
 
 ## Статус проекта
 
-🟡 **Стадия: старт / проектирование.** Заложена структура и правила; код модулей ещё не написан.
+🟢 **Бесплатная база Б1–Б6 собрана, задеплоена и в проде. Сайт подключён — заявки с формы идут в систему.**
 
-| Что есть | Что ещё нет |
+Конвейер `intake → enrich → pipedrive_upsert → first_touch` работает end-to-end: очередь с ретраями, dead-letter, реконсиляция, health-check, дашборд и Telegram-алерты.
+
+| Что в проде | Где |
 |---|---|
-| `PROJECT.md` — источник правды | `docs/` со спеками (`grc-reliability-layer.md` и др.) |
-| Правила Cursor в `.cursor/rules/` | Миграции схемы Supabase |
-| `.gitignore` | Edge Functions (worker, healthcheck, reconcile) |
-| Этот README | Next.js приложение (intake, дашборд) |
+| intake endpoint | Edge Function `intake` (`verify_jwt=false`, `X-Intake-Token`) |
+| очередь + worker | `worker` **v18** + `pg_cron` `run-worker` (1 мин) |
+| reconciliation / health-check | `reconcile` (5 мин) · `healthcheck` (2 мин) |
+| дашборд | 9 `dash_*` RPC + Next.js → `grc-work.vercel.app` |
+| Telegram-алерты + first_touch | `lib/alert.ts` (`sendAlert` / `sendTelegram`) |
+| сайт → система | форма `grc-eta.vercel.app/contact` → `/api/lead` → intake |
+
+> Дальше — платная фаза: First-touch (Vapi-звонок + почта-автоответ), AI Estimator, Outreach. Полный технический отчёт — в [`docs/grc-handoff.md`](./docs/grc-handoff.md).
 
 ---
 
@@ -26,12 +32,12 @@
 
 Четыре слоя с чётким разделением ответственности:
 
-- **Vercel** (Next.js, App Router, TypeScript strict) — веб-слой: лендинги, edge-endpoint приёма лидов, внутренний дашборд.
-- **Supabase / Postgres** — несущая конструкция: состояние, очередь job, аудит, Edge Functions (Deno/TS), `pg_cron`, `pgvector`.
-- **n8n** — дирижёр оркестрации. Вызывает внешние сервисы, но **НЕ хранит состояние**.
-- **Внешние сервисы** — Pipedrive (CRM), Vapi (голос), транзакционный SMTP, OpenAI/Anthropic (AI), Instantly/Smartlead (outreach), Telegram (алерты).
+- **Vercel** (Next.js, App Router, TypeScript) — веб-слой: (1) дашборд `grc-work.vercel.app` через `dash_*` RPC; (2) сайт `grc-eta.vercel.app` — форма `/contact` шлёт заявки через серверный роут `/api/lead` в `intake`.
+- **Supabase / Postgres** — несущая конструкция: состояние, очередь job, аудит, Edge Functions (Deno/TS), `pg_cron` + `pg_net`, Vault.
+- **n8n** — дирижёр оркестрации; **пока не задействован** — оркестрацию держат Edge Functions + `pg_cron`.
+- **Внешние сервисы** — Pipedrive (CRM, live), Telegram (алерты + уведомления о лидах, live); Vapi, SMTP, OpenAI/Anthropic, Instantly/Smartlead — платная фаза.
 
-Каждый шаг конвейера — атомарный **job** в очереди Supabase. n8n и Edge Functions только *исполняют* jobs; правда о состоянии — всегда в БД.
+Каждый шаг конвейера — атомарный **job** в очереди Supabase. Edge Functions только *исполняют* jobs; правда о состоянии — всегда в БД.
 
 ---
 
@@ -78,20 +84,21 @@
 
 | Модуль | Что делает | Статус |
 |---|---|---|
-| **Intake** | приём лида → ключ → запись → постановка в очередь | приоритет, строим первым |
-| **Enrich** | обогащение лида | после ядра |
-| **CRM sync** | upsert сделки в Pipedrive по `external_key` | после Enrich |
-| **First-touch** | звонок (Vapi) или письмо, фиксация результата в CRM | после CRM |
-| **Outreach** | холодные кампании, ответы заворачиваются обратно в Intake | warmup с дня 1 |
-| **Estimator** | расчёт стоимости. У заказчика **свой estimator на Vercel** → интегрируемся по HTTP API | ждёт контракт API от заказчика |
-| **Observability** | health-check, реконсиляция, дашборд, алерты | параллельно пайплайну |
+| **Сайт (форма)** | `/contact` → `/api/lead` (токен + honeypot) → intake | ✅ готово |
+| **Intake** | приём лида → ключ → запись → постановка в очередь | ✅ готово |
+| **Enrich** | нормализация контактов → enqueue CRM | ✅ готово |
+| **CRM sync** | upsert в Pipedrive по `external_key`; имя/компания(org)/срочность в сделке | ✅ готово |
+| **First-touch** | уведомление о лиде в Telegram + ссылка на сделку | ✅ готово (звонок/письмо — платная фаза) |
+| **Outreach** | холодные кампании, ответы заворачиваются обратно в Intake | ⏳ платная фаза |
+| **Estimator** | расчёт стоимости. У заказчика **свой estimator на Vercel** → интегрируемся по HTTP API | ⏳ ждёт контракт API |
+| **Observability** | health-check, реконсиляция, дашборд, алерты | ✅ готово |
 
 ---
 
 ## Поток лида (end-to-end)
 
 ```
-форма / outreach-ответ / vapi-inbound
+форма сайта (grc-eta → /api/lead) / outreach-ответ / vapi-inbound
         │
         ▼
 [Intake]  insert lead (on conflict do nothing) ──▶ enqueue job 'enrich'
@@ -100,7 +107,8 @@
         ▼
 [CRM]     upsert по external_key ──▶ pipedrive_deal_id, status=synced ──▶ enqueue 'first_touch'
         ▼
-[First-touch]  vapi_call | send_email ──▶ status=contacted, результат в CRM
+[First-touch]  Telegram-уведомление о лиде (+ссылка на сделку)
+               звонок Vapi / письмо-автоответ ──▶ status=contacted — платная фаза
 ```
 
 Компенсации (saga): провал на любом шаге → ретраи → при dead-letter лид помечается и попадает в `reconciliation_log`. Никакого «полусогласованного» состояния.
@@ -127,7 +135,7 @@
 └── docs/                       # reliability-layer, dashboard, dev-plan, budget
 ```
 
-> На текущий момент реализованы только `PROJECT.md`, правила в `.cursor/rules/` и этот `README.md`. Остальное — целевая структура.
+> Реализовано: `intake`, `worker`, `healthcheck`, `reconcile` (Edge Functions), миграции схемы + `dash_*` RPC, `lib/idempotency.ts` / `lib/pipedrive.ts` / `lib/alert.ts`, дашборд (`app/`), `docs/`. Форма сайта живёт в отдельном репозитории `zobnin8-ux/grc`.
 
 ---
 
@@ -145,11 +153,12 @@
 
 ## План действий (roadmap)
 
-- **Этап 0 — фундамент:** каркас Next.js на Vercel, инициализация Supabase, `.env.example`.
-- **Этап 1 — ядро + Intake:** миграция схемы, `lib/idempotency.ts`, `app/api/intake`, worker очереди (backoff, dead-letter, `job_runs`).
-- **Этап 2 — конвейер:** Enrich → CRM sync (Pipedrive upsert) → First-touch (Vapi/email), оркестрация в n8n, saga-компенсации.
-- **Этап 3 — наблюдаемость:** функции `dash_*`, дашборд, `lib/alert.ts` (Telegram), health-check + ночная реконсиляция через `pg_cron`.
-- **Этап 4 — расширения:** Outreach (Instantly/Smartlead), интеграция estimator заказчика.
+- [x] **Этап 0 — фундамент:** каркас Next.js на Vercel, инициализация Supabase, `.env.example`.
+- [x] **Этап 1 — ядро + Intake:** миграция схемы, `lib/idempotency.ts`, `intake`, worker очереди (backoff, dead-letter, `job_runs`).
+- [x] **Этап 2 — конвейер:** Enrich → CRM sync (Pipedrive upsert); оркестрация на Edge Functions + `pg_cron` (n8n пока не нужен); saga-компенсации.
+- [x] **Этап 3 — наблюдаемость:** функции `dash_*`, дашборд, `lib/alert.ts` (Telegram), health-check + реконсиляция через `pg_cron`.
+- [x] **Этап 3.5 — сайт + first_touch:** форма `grc-eta.vercel.app` → `/api/lead` → intake; `first_touch` шлёт Telegram-уведомление; сделки Pipedrive с именем/компанией/срочностью.
+- [ ] **Этап 4 — платная фаза:** First-touch (Vapi-звонок + почта-автоответ), AI Estimator, Outreach (Instantly/Smartlead).
 
 ---
 
@@ -161,7 +170,9 @@
 
 ## Документы проекта
 
+- [`docs/grc-handoff.md`](./docs/grc-handoff.md) — **полный технический отчёт по сделанному (Б1–Б6 + сайт).**
 - [`PROJECT.md`](./PROJECT.md) — полный контекст: архитектура, инварианты, стек, модель данных, глоссарий.
+- `obsidian/GRC — База знаний.md` — хаб проекта для Obsidian.
+- `docs/grc-reliability-layer.md` — технический спек слоя надёжности (реализован).
+- `docs/grc-dashboard-screen-1.md` — спека дашборда (реализована) · `docs/grc-dev-plan.md` — план разработки.
 - `.cursor/rules/` — правила для AI-ассистента (контекст, SQL, edge-функции, фронтенд).
-- _(планируется)_ `docs/grc-reliability-layer.md` — главный технический спек: DDL, жизненный цикл job, backoff, saga, реконсиляция.
-- _(планируется)_ `docs/grc-dashboard-screen-1.md`, `docs/grc-dev-plan.md`.
