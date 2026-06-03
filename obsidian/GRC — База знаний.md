@@ -1,9 +1,9 @@
 ---
 title: GRC — База знаний
 type: project-hub
-status: база собрана (Б1–Б6) · в проде
+status: база собрана (Б1–Б6) · сайт подключён · в проде
 created: 2026-05-31
-updated: 2026-05-31
+updated: 2026-06-03
 tags:
   - проект/grc
   - тип/хаб
@@ -23,21 +23,25 @@ aliases:
 > Ключевая идея — **надёжная инфраструктура, а не happy-path**: идемпотентность, очередь с ретраями, dead-letter, реконсиляция, наблюдаемость. Лид не теряется никогда.
 
 > [!success] Состояние
-> 🟢 **Бесплатная база Б1–Б6 собрана, задеплоена и в проде.** Конвейер `intake → enrich → pipedrive_upsert → first_touch(заглушка)` работает: очередь с ретраями, dead-letter, реконсиляция, health-check, дашборд и Telegram-алерты.
-> - Репозиторий: [zobnin8-ux/GRC_WORK](https://github.com/zobnin8-ux/GRC_WORK)
+> 🟢 **Бесплатная база Б1–Б6 собрана, задеплоена и в проде. Сайт подключён — заявки с формы идут в систему.** Конвейер `intake → enrich → pipedrive_upsert → first_touch` работает end-to-end: очередь с ретраями, dead-letter, реконсиляция, health-check, дашборд и Telegram-алерты.
+> - Бэкенд: [zobnin8-ux/GRC_WORK](https://github.com/zobnin8-ux/GRC_WORK) · worker **v18**
+> - Сайт: [zobnin8-ux/grc](https://github.com/zobnin8-ux/grc) → `grc-eta.vercel.app` (форма `/contact` → роут `/api/lead` → intake)
 > - Supabase: `kuuxaubnbwbwjdttvhom` · Frontend: `grc-work.vercel.app` (`/` → `/dashboard`)
 > - Полный handoff: `docs/grc-handoff.md`
-> Дальше — платная фаза (Vapi + почта, AI Estimator, outreach).
+> Дальше — платная фаза (Vapi-звонки + почта-автоответ, AI Estimator, outreach).
 
-> [!info] Что в проде (Б1–Б6)
+> [!info] Что в проде (Б1–Б6 + сайт)
 > | | Что | Где |
 > |---|---|---|
 > | Б1 | intake endpoint | Edge Function `intake` (verify_jwt=false, `X-Intake-Token`) |
-> | Б2 | автозапуск воркера | `pg_cron` `run-worker` (1м) → `worker` v7 |
+> | Б2 | автозапуск воркера | `pg_cron` `run-worker` (1м) → `worker` **v18** |
 > | Б3 | reconciliation | `reconcile` v3 + cron `run-reconcile` (5м) |
 > | Б4 | health-check | `healthcheck` v3 + cron `run-healthcheck` (2м) |
 > | Б5 | дашборд | 9 `dash_*` RPC (SECURITY DEFINER) + Next.js на Vercel |
 > | Б6 | Telegram-алерты | `lib/alert.ts` в worker/healthcheck/reconcile |
+> | + | **сайт → система** | форма `grc-eta.vercel.app/contact` → роут `/api/lead` (токен + honeypot) → intake |
+> | + | **first_touch** | уведомление о лиде в Telegram (`sendTelegram`) + ссылка на сделку |
+> | + | **Pipedrive** | сделки с человекочитаемым заголовком `[Срочность] Имя — Компания (источник)`, контакт + организация |
 
 ---
 
@@ -61,7 +65,7 @@ aliases:
 
 | Слой | Роль |
 |---|---|
-| **Vercel** | веб: дашборд (Next.js 14 App Router, TS). Сейчас — `/dashboard` на anon-ключе через `dash_*` RPC |
+| **Vercel** | веб: (1) дашборд `grc-work.vercel.app` — Next.js на anon-ключе через `dash_*` RPC; (2) сайт `grc-eta.vercel.app` (Next.js 15) — форма `/contact` через серверный роут `/api/lead` шлёт заявки в `intake` с `X-Intake-Token` |
 | **Supabase / Postgres** | несущая конструкция: состояние, очередь job, аудит, Edge Functions, `pg_cron` + `pg_net`, Vault |
 | **n8n** | дирижёр оркестрации — **пока не задействован**; оркестрацию сейчас держат Edge Functions + `pg_cron` |
 | **Внешние** | Pipedrive (live), Telegram (live); Vapi, SMTP, OpenAI/Anthropic, Instantly/Smartlead — платная фаза |
@@ -114,10 +118,11 @@ flowchart LR
 
 | Модуль | Что делает | Статус |
 |---|---|---|
+| **Сайт (форма)** | `/contact` → `/api/lead` (токен + honeypot) → intake | ✅ готово (`grc-eta.vercel.app`) |
 | **Intake** | приём → ключ → запись → enqueue | ✅ готово (Б1) |
 | **Enrich** | нормализация контактов, status=enriched, enqueue CRM | ✅ готово |
-| **CRM sync** | идемпотентный upsert в Pipedrive по `external_key` | ✅ готово |
-| **First-touch** | звонок (Vapi) / письмо + фиксация в CRM | 🟡 заглушка (`vapi_call`/`send_email` — платная фаза) |
+| **CRM sync** | upsert в Pipedrive по `external_key`; имя/компания(org)/срочность в сделке | ✅ готово |
+| **First-touch** | уведомление о лиде в Telegram + ссылка на сделку | ✅ готово · звонок (Vapi)/письмо-автоответ — 🟡 платная фаза |
 | **Outreach** | холодные кампании, ответы → обратно в Intake | ⏳ платная фаза |
 | **Estimator** | расчёт стоимости — **свой estimator заказчика на Vercel** | ⏳ ждёт API-контракт |
 | **Observability** | health-check, реконсиляция, дашборд, алерты | ✅ готово (Б3–Б6) |
@@ -127,7 +132,7 @@ flowchart LR
 ## 🔁 Поток лида
 
 ```
-форма / outreach-ответ / vapi-inbound
+форма сайта (grc-eta → /api/lead) / outreach-ответ / vapi-inbound
         │
         ▼
 [Intake]  insert lead (on conflict do nothing) ──▶ enqueue 'enrich'
@@ -136,7 +141,8 @@ flowchart LR
         ▼
 [CRM]     upsert по external_key ──▶ status=synced ──▶ enqueue 'first_touch'
         ▼
-[First-touch]  vapi_call | send_email ──▶ status=contacted, результат в CRM
+[First-touch]  Telegram-уведомление о лиде (+ссылка на сделку)
+               звонок Vapi / письмо-автоответ ──▶ status=contacted — платная фаза
 ```
 
 > [!warning] Saga / компенсации
@@ -170,7 +176,8 @@ flowchart LR
 - [x] **Этап 1 — ядро + Intake:** миграция схемы, `lib/idempotency.ts`, `intake`, worker очереди (`claim/complete/fail_job`)
 - [x] **Этап 2 — конвейер:** Enrich → CRM sync готовы; First-touch — заглушка; оркестрация на Edge Functions + `pg_cron` (n8n пока не нужен)
 - [x] **Этап 3 — наблюдаемость:** `dash_*`, дашборд на Vercel, `lib/alert.ts` (Telegram), health-check + реконсиляция (`pg_cron`)
-- [ ] **Этап 4 — платная фаза:** First-touch (Vapi + SMTP), AI Estimator, Outreach (Instantly/Smartlead)
+- [x] **Этап 3.5 — сайт + first_touch:** форма `grc-eta.vercel.app` → `/api/lead` → intake; `first_touch` шлёт Telegram-уведомление; сделки Pipedrive с именем/компанией/срочностью
+- [ ] **Этап 4 — платная фаза:** First-touch (Vapi-звонок + почта-автоответ через свой домен/Resend), AI Estimator, Outreach (Instantly/Smartlead)
 
 ---
 
@@ -182,6 +189,8 @@ flowchart LR
 > - [ ] n8n — понадобится ли вообще? Пока всё держат Edge Functions + `pg_cron`. Вернуться при усложнении оркестрации.
 > - [ ] Нужно ли встраивать UI estimator (iframe/ссылка) или только получать расчёт?
 > - [ ] Платные сервисы: Vapi (звонки), SMTP/почта, OpenAI — какие аккаунты/лимиты.
+> - [ ] Свой домен для GRC (сейчас сайт на `grc-eta.vercel.app`) — нужен для письма-автоответа клиенту (верификация в Resend/SMTP).
+> - [ ] Многочатовые Telegram-уведомления (таблица получателей + «рубильник») — на потом, пока шлём только владельцу.
 
 ---
 
@@ -207,4 +216,5 @@ flowchart LR
 > - `docs/grc-dashboard-screen-1.md` — спека дашборда (реализована)
 > - `docs/grc-dev-plan.md` — план разработки
 > - `README.md` — снимок состояния
+> - Репозиторий сайта `zobnin8-ux/grc` (`D:\ArtemSite`) — форма `/contact`, роут `/api/lead`
 > - `.cursor/rules/*.mdc` — правила для AI-ассистента
